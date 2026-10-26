@@ -1,0 +1,2 @@
+# NativeCameraFilter
+使用NDK的方式，对相机的预览画面做滤镜处理。此项目是NDK开发做练手使用
