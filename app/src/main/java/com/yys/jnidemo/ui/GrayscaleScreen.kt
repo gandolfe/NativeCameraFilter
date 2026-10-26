@@ -27,10 +27,10 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
-import com.yys.jnidemo.MainViewModel
+import com.yys.jnidemo.GrayViewModel
 
 @Composable
-fun GrayscaleScreen(viewModel: MainViewModel = viewModel()){
+fun GrayscaleScreen(viewModel: GrayViewModel = viewModel()){
 
     val context = LocalContext.current
 

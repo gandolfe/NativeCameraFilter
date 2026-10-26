@@ -15,7 +15,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-class MainViewModel: ViewModel() {
+class GrayViewModel: ViewModel() {
 
     private var _srcBitmap = MutableStateFlow<Bitmap?>(null)
 
