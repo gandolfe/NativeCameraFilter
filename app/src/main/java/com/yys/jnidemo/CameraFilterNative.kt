@@ -1,5 +1,6 @@
 package com.yys.jnidemo
 
+import android.graphics.SurfaceTexture
 import android.view.Surface
 import java.nio.ByteBuffer
 
@@ -31,4 +32,29 @@ object CameraFilterNative {
         rotation: Int,
         filterType: Int
     )
+
+    /**
+     * 根据显示组件的Surface创建EGL/OpenGL上下文，返回一个创建SurfaceTexture所需要的纹理id
+     */
+    external fun createGLContext(displaySurface: Surface) : Int
+
+    /**
+     * 把surfacetexture设置到native层，作为OES纹理的输入buffer存在
+     */
+    external fun setInputSurface(st: SurfaceTexture)
+
+    /**
+     * 触发渲染流程
+     */
+    external fun renderFrame(matrix: FloatArray)
+
+    /**
+     * 释放EGL/GL资源
+     */
+    external fun destroyGLContext()
+
+    /**
+     * 设置滤镜种类
+     */
+    external fun setFilterType(filterType: Int)
 }

@@ -1,16 +1,21 @@
 package com.yys.jnidemo.ui
 
 import android.Manifest
+import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.PixelFormat
+import android.graphics.SurfaceTexture
 import android.util.Log
+import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
+import android.view.WindowManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
+import androidx.camera.core.Preview
 import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -21,14 +26,18 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -64,35 +73,9 @@ fun CameraFilterScreen(viewModel: CameraViewModel = viewModel()){
     
     val rationState = viewModel.previewAspect.collectAsStateWithLifecycle()
 
-    // 目标分辨率：尽量拿到 640x480 的小画面，CPU 处理才跟得上实时
-    val resolutionSelector = remember {
-        ResolutionSelector.Builder()
-            .setResolutionStrategy(
-                ResolutionStrategy(
-                    android.util.Size(640, 480),
-                    ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER
-                )
-            )
-            .build()
-    }
+    // 复用同一个数组接收 SurfaceTexture 的变换矩阵，避免每帧分配
+    val transformMatrix = remember { FloatArray(16) }
 
-    // 图像分析器：跟随页面的“组合生命周期”，离开页面时自动释放
-    val imageAnalysis = remember {
-        ImageAnalysis.Builder()
-            .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
-            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-            .setResolutionSelector(resolutionSelector)
-            .build()
-            .also { analysis ->
-                analysis.setAnalyzer(viewModel.getAnalyzerExecutor()){imageProxy ->
-                    try {
-                        analyzeAndRender(imageProxy, viewModel)
-                    }finally {
-                        imageProxy.close()
-                    }
-                }
-            }
-    }
             
     //运行时申请相机权限
     val permissionLauncher = rememberLauncherForActivityResult(
@@ -100,7 +83,6 @@ fun CameraFilterScreen(viewModel: CameraViewModel = viewModel()){
     ) {granted ->
         if (granted){
             Log.i(TAG,"granted camera permission!")
-            bindCamera(context, lifecycleOwner, imageAnalysis)
             viewModel.setGranted(true)
         } else{
             Log.w(TAG, "camera permission granted fail!")
@@ -116,7 +98,6 @@ fun CameraFilterScreen(viewModel: CameraViewModel = viewModel()){
         
         if (granted){
             Log.i(TAG,"has camera permission")
-            bindCamera(context, lifecycleOwner, imageAnalysis)
             viewModel.setGranted(true)
         } else {
             viewModel.setGranted(false)
@@ -124,22 +105,61 @@ fun CameraFilterScreen(viewModel: CameraViewModel = viewModel()){
             permissionLauncher.launch(Manifest.permission.CAMERA)
         }
     }
-    
 
     Column { 
+        
+        Spacer(modifier = Modifier.height(30.dp))
+        
         if (grantedState.value){
+            
+            Text("实时滤镜（GL ES）",
+                style = MaterialTheme.typography.titleLarge,
+                modifier = Modifier.align(Alignment.CenterHorizontally))
+            
+            Spacer(modifier = Modifier.height(12.dp))
+            
             AndroidView(
-                modifier = Modifier.fillMaxWidth().aspectRatio(rationState.value),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    // 后置摄像头在竖屏下画面为 3:4，按真实比例显示避免拉伸
+                    .aspectRatio(3f / 4f)
+                    .clip(RoundedCornerShape(12.dp)),
                 factory = {ctx ->
+                    var sf: SurfaceTexture? = null
                     SurfaceView(ctx).apply { 
                         holder.setFormat(PixelFormat.RGBA_8888)
                         holder.addCallback(object : SurfaceHolder.Callback{
                             override fun surfaceCreated(p0: SurfaceHolder) {
-                                CameraFilterNative.setSurface(p0.surface)
+                                //根据显示的surface创建OES纹理，并反馈对应id
+                                val texId = CameraFilterNative.createGLContext(p0.surface)
+                                if (texId > 0){
+
+                                    //根据OES纹理id创建SurfaceTexture，它是链接生产者（Camera）和消费者(OES纹理)的桥梁
+                                    val surfaceTexture = SurfaceTexture(texId)
+                                    
+                                    //把surfaceTexture设置到native,并在底层保持它的引用
+                                    CameraFilterNative.setInputSurface(surfaceTexture)
+
+                                    surfaceTexture.setOnFrameAvailableListener {
+                                        surfaceTexture.getTransformMatrix(transformMatrix)
+                                        CameraFilterNative.renderFrame(transformMatrix)
+                                    }
+                                    
+                                    val inputSurface = Surface(surfaceTexture)
+                                    sf = surfaceTexture
+                                    
+                                    bindCameraUseCase(context, lifecycleOwner, inputSurface, surfaceTexture)
+                                    
+                                } else {
+                                    Log.w(TAG, "EGL 初始化失败！")
+                                }
+                                
                             }
 
                             override fun surfaceDestroyed(p0: SurfaceHolder) {
-                                CameraFilterNative.releaseSurface()
+                                sf?.setOnFrameAvailableListener (null)
+                                sf = null
+                                CameraFilterNative.destroyGLContext()
                             }
                             
                             override fun surfaceChanged(
@@ -189,48 +209,53 @@ fun CameraFilterScreen(viewModel: CameraViewModel = viewModel()){
     
 }
 
-fun bindCamera(
-    context: android.content.Context,
-    lifecycleOwner: LifecycleOwner, 
-    imageAnalysis: ImageAnalysis){
-    
+
+
+fun bindCameraUseCase(context: android.content.Context,
+                      lifecycleOwner: LifecycleOwner,
+                      inputSurface: Surface,
+                      inputSurfaceTexture: SurfaceTexture) {
     val future = ProcessCameraProvider.getInstance(context)
     future.addListener({
         val provider = future.get()
+        
+        val selector = ResolutionSelector.Builder()
+            .setResolutionStrategy(
+                ResolutionStrategy(
+                    android.util.Size(1440, 1920),
+                    ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER
+                )
+            ).build()
+        
+        val preview = Preview.Builder()
+            .setResolutionSelector(selector)
+            .build()
+            .apply {
+                // 让相机输出方向与屏幕方向一致（否则竖屏下画面会躺倒）
+                val rotation = (context.getSystemService(Context.WINDOW_SERVICE) as WindowManager)
+                    .defaultDisplay.rotation
+                targetRotation = rotation
+            }
+        
+        //把SurfaceTexture包装过的Surface提供给Preview，用作相机画面的输出buffer
+        //通过这一步，可以让相机的画面直接写入OES纹理，零拷贝
+        preview.setSurfaceProvider{request ->
+            inputSurfaceTexture.setDefaultBufferSize(
+                request.resolution.width,
+                request.resolution.height
+            )
+            request.provideSurface(inputSurface, ContextCompat.getMainExecutor(context)){
+                inputSurfaceTexture.release()
+                inputSurface.release()
+            }
+        }
+        
         provider.unbindAll()
-        provider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, imageAnalysis)
+        provider.bindToLifecycle(
+            lifecycleOwner, 
+            CameraSelector.DEFAULT_BACK_CAMERA, 
+            preview)
+
     }, ContextCompat.getMainExecutor(context))
     
-}
-
-fun analyzeAndRender(image: ImageProxy, viewModel: CameraViewModel){
-    val plane = image.planes[0]  //由于获取的Camera图像的格式是RGBA_8888，所以只有一个平面，就包含了所有图像信息
-    val buffer = plane.buffer
-    val rowStride = plane.rowStride      // 一行占多少字节
-    val pixelStride = plane.pixelStride  // 一个像素占几个字节（RGBA = 4）
-    val capacity = buffer.capacity()     // 整个缓冲的字节数
-
-    // 用缓冲自身的布局算出真实的行列数,不能用
-    val srcCols = if (pixelStride > 0) rowStride / pixelStride else 0
-    val srcRows = if (rowStride > 0) capacity / rowStride else 0
-    if (srcCols <= 0 || srcRows <= 0) return
-
-    // 相机给的是传感器朝向的画面（通常是横向），需要顺时针转正
-    val rotation = ((image.imageInfo.rotationDegrees % 360) + 360) % 360
-
-    // 旋转后的画面宽高比，用来决定预览区域的布局（90/270 度时宽高互换）
-    val swapped = (rotation == 90 || rotation == 270)
-    val rotCols = if (swapped) srcRows else srcCols
-    val rotRows = if (swapped) srcCols else srcRows
-    viewModel.setPreviewAspect(rotCols.toFloat() / rotRows.toFloat())
-
-    CameraFilterNative.processFrame(
-        buffer = buffer,
-        srcCols = srcCols,
-        srcRows = srcRows,
-        rowStride = rowStride,
-        capacity = capacity,
-        rotation = rotation,
-        filterType = viewModel.filterType.value
-    )
 }

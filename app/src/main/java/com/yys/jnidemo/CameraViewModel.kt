@@ -17,7 +17,6 @@ class CameraViewModel : ViewModel() {
     private val _previewAspect = MutableStateFlow(4f / 3f)
     
     val previewAspect: StateFlow<Float> = _previewAspect.asStateFlow()
-    
 
     private var _filterType = MutableStateFlow(0)
         set(value) {
@@ -26,12 +25,6 @@ class CameraViewModel : ViewModel() {
 
     val filterType = _filterType.asStateFlow()
     
-    private val analyzerExecutor: ExecutorService = Executors.newSingleThreadExecutor()
-    
-    fun getAnalyzerExecutor(): ExecutorService {
-        return analyzerExecutor
-    }
-    
     
     fun setGranted(granted : Boolean) {
         _granted.value = granted
@@ -39,18 +32,7 @@ class CameraViewModel : ViewModel() {
     
     fun setFilterType(filterType: Int){
         _filterType.value = filterType
-    }
-
-    fun setPreviewAspect(aspect: Float) {
-        if (_previewAspect.value != aspect) {
-            _previewAspect.value = aspect
-        }
-    }
-    
-
-    override fun onCleared() {
-        super.onCleared()
-        analyzerExecutor.shutdown()
+        CameraFilterNative.setFilterType(filterType)
     }
     
 }
